@@ -13,13 +13,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 try:
     with socketserver.TCPServer(("", PORT), Handler) as httpd:
-        print(f"Serving globe at http://localhost:{PORT}/globe.html")
+        print(f"Serving infinite galaxy at http://localhost:{PORT}/galaxy.html")
         print("Opening your browser now... Press Ctrl+C to stop the server.")
         
         # Give server a moment to start
         time.sleep(1)
         # Automatically open the browser
-        webbrowser.open(f"http://localhost:{PORT}/globe.html")
+        webbrowser.open(f"http://localhost:{PORT}/galaxy.html")
         
         httpd.serve_forever()
 except OSError as e:

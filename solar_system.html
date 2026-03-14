@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Hand Gesture Solar System</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: Arial, sans-serif;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        #video-container {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 320px;
+            height: 240px;
+            z-index: 10;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
+            border: 2px solid rgba(255, 255, 255, 0.2);
+        }
+        #webcam {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror */
+        }
+        #output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            transform: scaleX(-1); /* Mirror */
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.2);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        h1 { margin-top: 0; font-size: 24px; color: #ffaa00; }
+        p { margin: 5px 0; font-size: 14px; color: #ccc; }
+        .instruction { font-weight: bold; color: #fff; margin-top: 15px; }
+        #status { color: #ffcc00; font-weight: bold; }
+        #enable-cam-btn {
+            background-color: #ffaa00;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: all 0.3s;
+        }
+        #enable-cam-btn:hover { background-color: #fff; }
+    </style>
+</head>
+<body>
+
+    <!-- UI Overlay -->
+    <div id="ui-overlay">
+        <h1>Hand Gesture Solar System</h1>
+        <p>Status: <span id="status">Loading AI...</span></p>
+        <div class="instruction">Controls:</div>
+        <p>🖐️ <b>Open Hand:</b> Move hand left/right/up/down to rotate system.</p>
+        <p>🤏 <b>Pinch:</b> Bring index & thumb together to zoom in to Sun.</p>
+        <p>✋ <b>Spread:</b> Move index & thumb apart to zoom out.</p>
+        <button id="enable-cam-btn" style="display:none;">Enable Camera</button>
+        <p style="margin-top:20px; font-size:12px;">Planetary scales and distances are stylized.</p>
+    </div>
+
+    <!-- 3D Globe Canvas -->
+    <div id="canvas-container"></div>
+
+    <!-- Webcam & AI Overlays -->
+    <div id="video-container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <!-- MediaPipe Libraries -->
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/+esm";
+
+        // --- 1. SET UP 3D SOLAR SYSTEM (THREE.JS) ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        
+        // Add starfield background
+        const bgGeometry = new THREE.SphereGeometry(900, 64, 64);
+        const bgMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
+        const backgroundObj = new THREE.Mesh(bgGeometry, bgMaterial);
+        scene.add(backgroundObj);
+        
+        // Add tiny stars manually
+        const starsGeometry = new THREE.BufferGeometry();
+        const starsMaterial = new THREE.PointsMaterial({color: 0xFFFFFF, size: 0.8, transparent: true, opacity: 0.8});
+        const starsVertices = [];
+        for(let i=0; i<5000; i++) {
+            const x = (Math.random() - 0.5) * 1800;
+            const y = (Math.random() - 0.5) * 1800;
+            const z = (Math.random() - 0.5) * 1800;
+            if(Math.sqrt(x*x + y*y + z*z) > 100) { // Keep away from center
+                starsVertices.push(x, y, z);
+            }
+        }
+        starsGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starsVertices, 3));
+        const stars = new THREE.Points(starsGeometry, starsMaterial);
+        scene.add(stars);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
+        // Better angle to view the orbital plane initially
+        camera.position.z = 250;
+        camera.position.y = 80;
+        camera.lookAt(0,0,0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        // Entire system group so we can rotate everything easily
+        const solarSystem = new THREE.Group();
+        scene.add(solarSystem);
+
+        // ----------------- SUN -----------------
+        const sunGeometry = new THREE.SphereGeometry(15, 64, 64);
+        // Sun glows and emits light, so BasicMaterial is used
+        const sunMaterial = new THREE.MeshBasicMaterial({ color: 0xffdd00 });
+        const sun = new THREE.Mesh(sunGeometry, sunMaterial);
+        solarSystem.add(sun);
+        
+        // Add inner glow atmosphere to sun
+        const sunAtmosphereGeometry = new THREE.SphereGeometry(15.5, 64, 64);
+        const sunAtmosphereMaterial = new THREE.MeshBasicMaterial({
+            color: 0xff6600,
+            transparent: true,
+            opacity: 0.3,
+            blending: THREE.AdditiveBlending,
+            side: THREE.BackSide
+        });
+        const sunAtmosphere = new THREE.Mesh(sunAtmosphereGeometry, sunAtmosphereMaterial);
+        solarSystem.add(sunAtmosphere);
+
+        // Add a point light originating from the Sun explicitly!
+        const sunLight = new THREE.PointLight(0xffffff, 2, 800);
+        solarSystem.add(sunLight);
+        
+        // Dim ambient light so planets aren't pitch black on their dark side
+        scene.add(new THREE.AmbientLight(0x222222));
+
+        // ----------------- PLANETS -----------------
+        const planetsData = [];
+
+        function createPlanet(size, distance, color, speed, hasRings = false) {
+            // Group for orbit rotation around sun
+            const orbitGroup = new THREE.Group();
+            
+            // The planet mesh
+            const geometry = new THREE.SphereGeometry(size, 32, 32);
+            // Standard/Phong materials reflect light from the sunLight
+            const material = new THREE.MeshStandardMaterial({ 
+                color: color,
+                roughness: 0.6,
+                metalness: 0.1
+            });
+            const planet = new THREE.Mesh(geometry, material);
+            planet.position.x = distance;
+            
+            // Add Rings if necessary (Saturn)
+            if (hasRings) {
+                const ringGeo = new THREE.RingGeometry(size * 1.5, size * 2.2, 32);
+                const ringMat = new THREE.MeshStandardMaterial({ 
+                    color: 0xcccccc, 
+                    transparent: true, 
+                    opacity: 0.7, 
+                    side: THREE.DoubleSide 
+                });
+                const ring = new THREE.Mesh(ringGeo, ringMat);
+                // Rotate ring to be flat against orbital plane
+                ring.rotation.x = Math.PI / 2 + 0.3;
+                planet.add(ring);
+            }
+
+            orbitGroup.add(planet);
+            solarSystem.add(orbitGroup);
+            
+            // Draw visual orbit trail
+            const trailGeometry = new THREE.RingGeometry(distance - 0.2, distance + 0.2, 64);
+            const trailMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xffffff, 
+                transparent: true, 
+                opacity: 0.1, 
+                side: THREE.DoubleSide 
+            });
+            const trail = new THREE.Mesh(trailGeometry, trailMaterial);
+            trail.rotation.x = Math.PI / 2;
+            solarSystem.add(trail);
+
+            planetsData.push({ orbitGroup: orbitGroup, planetMesh: planet, speed: speed });
+            return planet;
+        }
+
+        // Create the 8 planets (Scale/Distances modified for visibility)
+        createPlanet(0.8, 25, 0x888888, 0.04);         // Mercury
+        createPlanet(1.5, 35, 0xffaa33, 0.015);        // Venus
+        createPlanet(1.6, 45, 0x0088ff, 0.01);         // Earth
+        createPlanet(1.2, 55, 0xff4400, 0.008);        // Mars
+        createPlanet(4.5, 80, 0xff9900, 0.002);        // Jupiter
+        createPlanet(3.8, 110, 0xddccaa, 0.0009, true); // Saturn
+        createPlanet(2.5, 135, 0x00ffff, 0.0004);      // Uranus
+        createPlanet(2.4, 160, 0x0000ff, 0.0001);      // Neptune
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- 2. SET UP MEDIAPIPE HAND TRACKING ---
+        let handLandmarker = undefined;
+        let runningMode = "VIDEO";
+        const video = document.getElementById("webcam");
+        const canvasElement = document.getElementById("output_canvas");
+        const canvasCtx = canvasElement.getContext("2d");
+        const enableWebcamButton = document.getElementById("enable-cam-btn");
+        const statusText = document.getElementById("status");
+        
+        // System Control Variables
+        let targetRotationX = 0;
+        let targetRotationY = 0;
+        let currentRotationX = 0;
+        let currentRotationY = 0;
+        // Default solar system zoom is much further out than the globe
+        let targetZoom = 250; 
+        
+        // Smoothing factors
+        const rotationDamping = 0.05;
+        const zoomDamping = 0.1;
+
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
+            );
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: runningMode,
+                numHands: 1
+            });
+            statusText.innerText = "Ready!";
+            statusText.style.color = "#00ff00";
+            enableWebcamButton.style.display = "block";
+        }
+        createHandLandmarker();
+
+        let webcamRunning = false;
+        enableWebcamButton.addEventListener("click", () => {
+            if (!handLandmarker) return;
+            if (webcamRunning) {
+                webcamRunning = false;
+                enableWebcamButton.innerText = "Enable Camera";
+            } else {
+                webcamRunning = true;
+                enableWebcamButton.style.display = "none";
+                statusText.innerText = "Tracking Hands...";
+                const constraints = { video: true };
+                navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+                    video.srcObject = stream;
+                    video.addEventListener("loadeddata", predictWebcam);
+                });
+            }
+        });
+
+        let lastVideoTime = -1;
+        let results = undefined;
+        let isPinching = false;
+
+        async function predictWebcam() {
+            canvasElement.style.width = video.videoWidth;
+            canvasElement.style.height = video.videoHeight;
+            canvasElement.width = video.videoWidth;
+            canvasElement.height = video.videoHeight;
+
+            if (runningMode === "IMAGE") {
+                runningMode = "VIDEO";
+                await handLandmarker.setOptions({ runningMode: "VIDEO" });
+            }
+
+            let startTimeMs = performance.now();
+            if (lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                results = handLandmarker.detectForVideo(video, startTimeMs);
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            if (results && results.landmarks && results.landmarks.length > 0) {
+                const landmarks = results.landmarks[0]; 
+                const palmX = landmarks[9].x;
+                const palmY = landmarks[9].y;
+                const thumb = landmarks[4];
+                const index = landmarks[8];
+                const pinchDist = Math.sqrt(Math.pow(thumb.x - index.x, 2) + Math.pow(thumb.y - index.y, 2));
+                
+                // Draw UI on hand representing solar system control
+                canvasCtx.strokeStyle = "#ffaa00";
+                canvasCtx.lineWidth = 2;
+                canvasCtx.fillStyle = "rgba(255, 170, 0, 0.2)";
+                
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(thumb.x * canvasElement.width, thumb.y * canvasElement.height);
+                canvasCtx.lineTo(index.x * canvasElement.width, index.y * canvasElement.height);
+                canvasCtx.lineTo(palmX * canvasElement.width, palmY * canvasElement.height);
+                canvasCtx.closePath();
+                canvasCtx.stroke();
+                canvasCtx.fill();
+                
+                canvasCtx.beginPath();
+                canvasCtx.arc(index.x * canvasElement.width, index.y * canvasElement.height, 5, 0, 2 * Math.PI);
+                canvasCtx.fillStyle = "#fff";
+                canvasCtx.fill();
+
+                canvasCtx.beginPath();
+                canvasCtx.arc(thumb.x * canvasElement.width, thumb.y * canvasElement.height, 5, 0, 2 * Math.PI);
+                canvasCtx.fill();
+
+                // ZOOM LOGIC for Solar System
+                if (pinchDist < 0.1) {
+                     canvasCtx.strokeStyle = "#ff0000";
+                     canvasCtx.beginPath();
+                     canvasCtx.moveTo(thumb.x * canvasElement.width, thumb.y * canvasElement.height);
+                     canvasCtx.lineTo(index.x * canvasElement.width, index.y * canvasElement.height);
+                     canvasCtx.stroke();
+                     isPinching = true;
+                } else {
+                     isPinching = false;
+                     // Map pinch distance 0.1 -> 300 (close together = zoom in)
+                     // Map pinch distance 0.4 -> 40 (far apart = zoom out)
+                     // Because camera starts at 250
+                     let mappedZoom = 350 - ((pinchDist - 0.1) / 0.3) * 300;
+                     mappedZoom = Math.max(30, Math.min(300, mappedZoom)); // Clamp zoom level securely inside bounds
+                     targetZoom = mappedZoom;
+                }
+                
+                // ROTATION LOGIC
+                // Rotate the entire solar system based on open hand
+                targetRotationY = -(palmX - 0.5) * Math.PI * 2; 
+                targetRotationX = (palmY - 0.5) * Math.PI;
+
+            } else {
+                // Return to idle slow spin when hand is gone
+                targetRotationY += 0.002;
+                isPinching = false;
+            }
+            canvasCtx.restore();
+
+            if (webcamRunning === true) {
+                window.requestAnimationFrame(predictWebcam);
+            }
+        }
+
+        // --- 3. MAIN RENDER LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Update planet orbits and rotations
+            planetsData.forEach(p => {
+                p.orbitGroup.rotation.y += p.speed;
+                p.planetMesh.rotation.y += 0.02; // Rotate planet on axis
+            });
+
+            // Make the sun slowly spin
+            sun.rotation.y += 0.005;
+
+            // Apply dampening to hand-driven solar system tilt/rotation
+            currentRotationX += (targetRotationX - currentRotationX) * rotationDamping;
+            currentRotationY += (targetRotationY - currentRotationY) * rotationDamping;
+            
+            // Limit the tilt (X axis) so it doesn't flip completely upside down easily
+            const clampedX = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, currentRotationX));
+            
+            solarSystem.rotation.x = clampedX;
+            solarSystem.rotation.y = currentRotationY;
+
+            // Apply dampening to camera zoom
+            camera.position.z += (targetZoom - camera.position.z) * zoomDamping;
+
+            // Spin stars super slowly
+            stars.rotation.y += 0.0002;
+
+            renderer.render(scene, camera);
+        }
+        
+        animate();
+    </script>
+</body>
+</html>
